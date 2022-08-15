@@ -1,0 +1,12 @@
+[package]
+name = "twirc"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+twitch-irc = { version = "4", default-features = false, features = ["transport-ws-native-tls"] }
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "time"] }
+tui = { version = "0.18", default-features = false, features = ["crossterm"] }
+crossterm = { version = "0.25", default-features = false, features = ["event-stream"] }
+futures = "0.3"
+chrono = "0.4"
