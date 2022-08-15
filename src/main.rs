@@ -3,7 +3,9 @@
 #![allow(dead_code)]
 
 use std::{error, io};
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::io::{Stdout, StdoutLock};
 
 use chrono::{DateTime, Utc};
 use crossterm::{
@@ -16,6 +18,7 @@ use crossterm::{
     },
 };
 use futures::{future::FutureExt, StreamExt};
+use textwrap::Options;
 use tokio::select;
 use tokio::time::{self, Duration, Instant};
 use tui::{Frame, layout::Corner, style::{Color, Modifier, Style}, Terminal, text::{Span, Spans}, widgets::{Block, Borders, List, ListItem}};
@@ -32,13 +35,10 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
     let (mut incoming_messages, client) =
         TwitchIRCClient::<SecureWSTransport, StaticLoginCredentials>::new(config);
 
-    client.join("krylia_sovetov".to_owned()).unwrap();
+    client.join("kochevnik".to_owned()).unwrap();
 
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+    let mut app = App::new();
+    app.draw()?;
 
     let mut reader = EventStream::new();
     loop {
@@ -51,9 +51,9 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
                             Event::Key(ev) if ev.code == KeyCode::Char('q') => {
                                 break;
                             }
-                            // TODO probably it's worth doing it by timer
+                            // TODO probably it's worth doing it with timer
                             Event::Resize(_, _) => {
-                                terminal.draw(ui)?;
+                                app.draw()?;
                             }
                             _ => {},
                         }
@@ -67,17 +67,19 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
                 match message {
                     ServerMessage::ClearChat(msg) => {
                         match msg.action {
-                            ClearChatAction::ChatCleared => {
-                            }
                             ClearChatAction::UserBanned{user_login: _, user_id} => {
+                                app.clear_user_messages(user_id);
                             }
                             ClearChatAction::UserTimedOut {user_id, user_login: _, timeout_length: _ } => {
+                                app.clear_user_messages(user_id);
                             }
+                            _ => {}
                         }
-                        terminal.draw(ui)?;
+                        app.draw()?;
                     }
                     ServerMessage::ClearMsg(msg) => {
-                        terminal.draw(ui)?;
+                        app.clear_message(msg.message_id);
+                        app.draw()?;
                     }
                     ServerMessage::Privmsg(msg) => {
                         let message = Message {
@@ -87,8 +89,10 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
                             message_text: msg.message_text,
                             sender_color: msg.name_color,
                             server_timestamp: msg.server_timestamp,
+                            deleted: false,
                         };
-                        terminal.draw(ui)?;
+                        app.add_message(message);
+                        app.draw()?;
                     }
                     _ => {}
                 }
@@ -96,31 +100,106 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
         }
     }
 
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
-
     Ok(())
 }
 
-fn ui<B: Backend>(frame: &mut Frame<B>) {}
-
-#[derive(Debug, Clone)]
-struct Verticals {
-    pub chunks: Vec<Rect>,
-    pub constraints: Vec<Constraint>,
+struct App {
+    terminal: Terminal<CrosstermBackend<Stdout>>,
+    messages: VecDeque<Message>,
 }
 
-impl Verticals {
-    pub fn new(chunks: Vec<Rect>, constraints: Vec<Constraint>) -> Self {
+impl App {
+    fn new() -> Self {
+        enable_raw_mode().unwrap();
+        let mut stdout = io::stdout();
+        execute!(stdout, EnterAlternateScreen, EnableMouseCapture).unwrap();
+        let backend = CrosstermBackend::new(stdout);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.hide_cursor().unwrap();
+
         Self {
-            chunks,
-            constraints,
+            terminal,
+            messages: VecDeque::new(),
         }
+    }
+
+    fn clear_user_messages(&mut self, user_id: String) {
+        for msg in &mut self.messages {
+            if msg.sender_id == user_id {
+                msg.deleted = true;
+                break;
+            }
+        }
+    }
+
+    fn clear_message(&mut self, msg_id: String) {
+        for msg in &mut self.messages {
+            if msg.message_id == msg_id {
+                msg.deleted = true;
+                break;
+            }
+        }
+    }
+
+    fn add_message(&mut self, msg: Message) {
+        if self.messages.len() > 30 {
+            let removed = self.messages.pop_back().unwrap();
+        }
+        self.messages.push_front(msg);
+    }
+
+    fn draw(&mut self) -> Result<(), Box<dyn error::Error>> {
+        self.terminal.draw(|f| {
+            let list_item_list: Vec<_> = self.messages.iter()
+                .map(|msg| {
+                    let sender_name_color = if msg.deleted {
+                        Color::Reset
+                    } else {
+                        msg.sender_color.as_ref()
+                            .map(|c| Color::Rgb(c.r, c.g, c.b))
+                            .unwrap_or(Color::Reset)
+                    };
+                    let header = Spans::from(vec![
+                        Span::styled(msg.server_timestamp.format("%H:%M:%S").to_string(), Style::default().fg(Color::Blue)),
+                        Span::raw(" "),
+                        Span::styled(
+                            msg.sender_name.to_owned(),
+                            Style::default().fg(sender_name_color).add_modifier(Modifier::ITALIC).add_modifier(Modifier::BOLD),
+                        ),
+                    ]);
+                    let width = f.size().width as usize - 2;
+                    let options = Options::new(width).break_words(false);
+                    let message_lines: Vec<_> = textwrap::wrap(&msg.message_text, options).iter()
+                        .map(|line| match line {
+                            Cow::Borrowed(txt) => *txt,
+                            Cow::Owned(txt) => txt,
+                        })
+                        .map(|line| {
+                            Spans::from(vec![Span::raw(line.to_owned())])
+                        })
+                        .collect();
+                    let mut spans = vec![Spans::from("-".repeat(width)), header];
+                    spans.extend(message_lines);
+                    let block_color = if msg.deleted { Color::LightRed } else { Color::Reset };
+                    ListItem::new(spans).style(Style::default().bg(block_color))
+                })
+                .collect();
+
+            let msg_list = List::new(list_item_list)
+                .block(Block::default().borders(Borders::ALL).title("Chat"))
+                .start_corner(Corner::TopLeft);
+            f.render_widget(msg_list, f.size());
+        })?;
+
+        Ok(())
+    }
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        disable_raw_mode().unwrap();
+        execute!(self.terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture).unwrap();
+        self.terminal.show_cursor().unwrap();
     }
 }
 
@@ -131,4 +210,5 @@ struct Message {
     message_text: String,
     server_timestamp: DateTime<Utc>,
     sender_color: Option<RGBColor>,
+    deleted: bool,
 }
