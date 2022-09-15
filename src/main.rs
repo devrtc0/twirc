@@ -2,7 +2,7 @@
 #![allow(unused_variables)]
 #![allow(dead_code)]
 
-use deadpool_postgres::{ManagerConfig, RecyclingMethod, Manager, Pool};
+use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod};
 use duration_string::DurationString;
 use log::{debug, error, info, warn};
 use std::borrow::Cow;
@@ -45,7 +45,7 @@ struct AppConfig {
 async fn watch_task(
     streamers: Vec<String>,
     mut rx: Receiver<()>,
-    pool: Pool
+    pool: Pool,
 ) -> Result<(), Box<dyn error::Error>> {
     info!("Initializing the task for {:?}", streamers);
 
@@ -54,7 +54,7 @@ async fn watch_task(
         TwitchIRCClient::<SecureWSTransport, StaticLoginCredentials>::new(config);
 
     for streamer in streamers {
-        twitch_client.join(streamer).unwrap();
+        twitch_client.join(streamer)?;
     }
 
     loop {
