@@ -1301,6 +1301,7 @@ dependencies = [
  "clap",
  "duration-string",
  "log",
+ "num_cpus",
  "pretty_env_logger",
  "serde",
  "serde_yaml",
