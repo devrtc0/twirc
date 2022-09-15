@@ -1,0 +1,7 @@
+#!/usr/bin/env sh
+
+DIR_PATH="$(dirname $(realpath $0))"
+
+cd $DIR_PATH
+
+RUST_LOG=info cargo r --release -- -c config.yml
