@@ -41,9 +41,14 @@ struct AppConfig {
     streamers: Vec<String>,
 }
 
-async fn watch_task(streamer: String, mut rx: Receiver<()>) -> Result<(), Box<dyn error::Error>> {
-    info!("Initializing the task for {}", streamer);
+static TASK_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
+async fn watch_task(
+    streamers: Vec<String>,
+    mut rx: Receiver<()>,
+) -> Result<(), Box<dyn error::Error>> {
+    let task_number = TASK_COUNTER.fetch_add(1, Ordering::SeqCst);
+    info!("Initializing the task {}", task_number);
     let (db_client, connection) = Config::new()
         .host("localhost")
         .port(5432)
@@ -62,12 +67,14 @@ async fn watch_task(streamer: String, mut rx: Receiver<()>) -> Result<(), Box<dy
     let (mut incoming_messages, twitch_client) =
         TwitchIRCClient::<SecureWSTransport, StaticLoginCredentials>::new(config);
 
-    twitch_client.join(streamer.clone())?;
+    for streamer in streamers {
+        twitch_client.join(streamer).unwrap();
+    }
 
     loop {
         select! {
             _ = rx.changed() => {
-                info!("Got an interrupt message for {}", streamer);
+                info!("Got an interrupt message in task {}", task_number);
                 return Ok(());
             },
             Some(message) = incoming_messages.recv() => {
@@ -127,11 +134,13 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
     let cpu_nums = num_cpus::get();
     let mut handles = Vec::with_capacity(cpu_nums);
     let chunk_number = (app_config.streamers.len() + cpu_nums - 1) / cpu_nums;
+    let chunks = app_config.streamers.chunks(chunk_number);
     let (tx, rx) = watch::channel(());
-    for streamer in app_config.streamers {
+    for chunk in chunks {
+        let streamers = chunk.into_iter().map(|x| x.clone()).collect();
         let _rx = rx.clone();
         let handle = tokio::spawn(async move {
-            watch_task(streamer, _rx).await.unwrap();
+            watch_task(streamers, _rx).await.unwrap();
         });
         handles.push(handle);
     }
