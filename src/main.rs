@@ -2,213 +2,157 @@
 #![allow(unused_variables)]
 #![allow(dead_code)]
 
-use std::{error, io};
+use duration_string::DurationString;
+use log::{info, warn, error, debug};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::fs::File;
 use std::io::{Stdout, StdoutLock};
+use std::path::PathBuf;
+use std::{error, io};
 
 use chrono::{DateTime, Utc};
-use crossterm::{
-    event::{
-        DisableMouseCapture, EnableMouseCapture, Event, EventStream, KeyCode,
-    },
-    execute,
-    terminal::{
-        disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-    },
-};
-use futures::{future::FutureExt, StreamExt};
-use textwrap::Options;
-use tokio::select;
+
+use clap::Parser;
+use serde::Deserialize;
 use tokio::time::{self, Duration, Instant};
-use tui::{Frame, layout::Corner, style::{Color, Modifier, Style}, Terminal, text::{Span, Spans}, widgets::{Block, Borders, List, ListItem}};
-use tui::backend::{Backend, CrosstermBackend};
-use tui::layout::{Constraint, Direction, Layout, Rect};
-use tui::widgets::{Row, Table};
-use twitch_irc::{ClientConfig, SecureWSTransport, TwitchIRCClient};
+use tokio::{select, signal};
+use tokio_postgres::types::Type;
+use tokio_postgres::{GenericClient, NoTls};
 use twitch_irc::login::StaticLoginCredentials;
 use twitch_irc::message::{ClearChatAction, RGBColor, ServerMessage};
+use twitch_irc::{ClientConfig, SecureWSTransport, TwitchIRCClient};
+use uuid::Uuid;
+
+#[derive(Parser)]
+#[clap(author, version, about, long_about = None)]
+struct Cli {
+    #[clap(short, long, value_parser, value_name = "FILE")]
+    config: PathBuf,
+}
+
+#[derive(Debug, PartialEq, Deserialize)]
+struct AppConfig {
+    streamers: Vec<String>,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn error::Error>> {
+    pretty_env_logger::init();
+
+    let app_config: AppConfig = {
+        let cli = Cli::parse();
+        let config_path = cli.config;
+        if !config_path.exists() {
+            panic!("file not exists");
+        }
+        let f = File::open(config_path)?;
+        serde_yaml::from_reader(f)?
+    };
+
+    let (db_client, connection) = tokio_postgres::connect(
+        "host=localhost port=5432 user=twirc password=twirc dbname=twirc",
+        NoTls,
+    )
+    .await?;
+    tokio::spawn(async move {
+        if let Err(e) = connection.await {
+            error!("connection error: {}", e);
+        }
+    });
+
     let config = ClientConfig::default();
-    let (mut incoming_messages, client) =
-        TwitchIRCClient::<SecureWSTransport, StaticLoginCredentials>::new(config);
+    let (mut incoming_messages, twitch_client) = TwitchIRCClient::<SecureWSTransport, StaticLoginCredentials>::new(config);
 
-    client.join("kochevnik".to_owned()).unwrap();
+    for streamer in app_config.streamers {
+        twitch_client.join(streamer)?;
+    }
 
-    let mut app = App::new();
-    app.draw()?;
+    let insert_stmt = db_client.prepare_typed(r#"
+    INSERT INTO twirc (channel_id, channel_login, sender_id, sender_login, sender_name, message_id, message_text, server_timestamp)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    "#, &[Type::INT4, Type::VARCHAR, Type::INT4, Type::VARCHAR, Type::VARCHAR, Type::UUID, Type::VARCHAR, Type::TIMESTAMPTZ]
+    ).await?;
+    let delete_stmt = db_client
+        .prepare_typed(
+            r#"
+    UPDATE twirc SET deleted = true WHERE message_id = $1
+    "#,
+            &[Type::UUID],
+        )
+        .await?;
 
-    let mut reader = EventStream::new();
+    let ban_stmt = db_client
+        .prepare_typed(
+            r#"
+    UPDATE twirc SET deleted = true WHERE sender_id = $1 AND channel_id = $2
+    "#,
+            &[Type::INT4, Type::INT4],
+        )
+        .await?;
+
     loop {
-        let event = reader.next().fuse();
         select! {
-            ev = event => {
-                match ev {
-                    Some(Ok(event)) => {
-                        match event {
-                            Event::Key(ev) if ev.code == KeyCode::Char('q') => {
-                                break;
-                            }
-                            // TODO probably it's worth doing it with timer
-                            Event::Resize(_, _) => {
-                                app.draw()?;
-                            }
-                            _ => {},
-                        }
-                    },
-                    None | Some(Err(_)) => {
-                        break;
-                    },
-                }
+            _ = signal::ctrl_c() => {
+                break;
             },
             Some(message) = incoming_messages.recv() => {
                 match message {
                     ServerMessage::ClearChat(msg) => {
                         match msg.action {
-                            ClearChatAction::UserBanned{user_login: _, user_id} => {
-                                app.clear_user_messages(user_id);
+                            ClearChatAction::UserBanned{user_login, user_id} => {
+                                let channel_id: i32 = msg.channel_id.parse()?;
+                                let sender_id: i32 = user_id.parse()?;
+                                let count = db_client.execute(&ban_stmt,
+                                    &[&sender_id, &channel_id]
+                                ).await?;
+                                if count == 0 {
+                                    error!("No message was marked as deleted for user {} in channel {}", user_login, msg.channel_login);
+                                } else {
+                                    debug!("{} banned in channel({})", user_login, msg.channel_login);
+                                }
                             }
-                            ClearChatAction::UserTimedOut {user_id, user_login: _, timeout_length: _ } => {
-                                app.clear_user_messages(user_id);
+                            ClearChatAction::UserTimedOut {user_id, user_login, timeout_length } => {
+                                let channel_id: i32 = msg.channel_id.parse()?;
+                                let sender_id: i32 = user_id.parse()?;
+                                let count = db_client.execute(&ban_stmt,
+                                    &[&sender_id, &channel_id]
+                                ).await?;
+                                if count == 0 {
+                                    error!("No message was marked as deleted for user {} in channel {}", user_login, msg.channel_login);
+                                } else {
+                                    let duration = DurationString::from(timeout_length);
+                                    debug!("{} timeouted in channel({}) for {}", user_login, msg.channel_login, duration);
+                                }
                             }
                             _ => {}
                         }
-                        app.draw()?;
                     }
                     ServerMessage::ClearMsg(msg) => {
-                        app.clear_message(msg.message_id);
-                        app.draw()?;
+                        let msg_id = Uuid::parse_str(&msg.message_id)?;
+                        let count = db_client.execute(&delete_stmt,
+                            &[&msg_id]
+                        ).await?;
+                        if count == 0 {
+                            error!("No message was marked as deleted for user {} in channel {}", msg.sender_login, msg.channel_login);
+                        } else {
+                            debug!("User's({}) message ({}) deleted in channel({})", msg.sender_login, msg.message_text, msg.channel_login);
+                        }
                     }
                     ServerMessage::Privmsg(msg) => {
-                        let message = Message {
-                            message_id: msg.message_id,
-                            sender_name: msg.sender.name,
-                            sender_id: msg.sender.id,
-                            message_text: msg.message_text,
-                            sender_color: msg.name_color,
-                            server_timestamp: msg.server_timestamp,
-                            deleted: false,
-                        };
-                        app.add_message(message);
-                        app.draw()?;
+                        let sender = &msg.sender;
+                        let channel_id: i32 = msg.channel_id.parse()?;
+                        let sender_id: i32 = sender.id.parse()?;
+                        let msg_id = Uuid::parse_str(&msg.message_id)?;
+                        let count = db_client.execute(&insert_stmt,
+                            &[&channel_id, &msg.channel_login, &sender_id, &sender.login, &sender.name, &msg_id, &msg.message_text, &msg.server_timestamp]
+                        ).await?;
+                        debug!("({}): {}: '{}'", msg.channel_login, sender.name, msg.message_text);
                     }
                     _ => {}
                 }
             },
         }
     }
-
     Ok(())
-}
-
-struct App {
-    terminal: Terminal<CrosstermBackend<Stdout>>,
-    messages: VecDeque<Message>,
-}
-
-impl App {
-    fn new() -> Self {
-        enable_raw_mode().unwrap();
-        let mut stdout = io::stdout();
-        execute!(stdout, EnterAlternateScreen, EnableMouseCapture).unwrap();
-        let backend = CrosstermBackend::new(stdout);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.hide_cursor().unwrap();
-
-        Self {
-            terminal,
-            messages: VecDeque::new(),
-        }
-    }
-
-    fn clear_user_messages(&mut self, user_id: String) {
-        for msg in &mut self.messages {
-            if msg.sender_id == user_id {
-                msg.deleted = true;
-                break;
-            }
-        }
-    }
-
-    fn clear_message(&mut self, msg_id: String) {
-        for msg in &mut self.messages {
-            if msg.message_id == msg_id {
-                msg.deleted = true;
-                break;
-            }
-        }
-    }
-
-    fn add_message(&mut self, msg: Message) {
-        if self.messages.len() > 30 {
-            let removed = self.messages.pop_back().unwrap();
-        }
-        self.messages.push_front(msg);
-    }
-
-    fn draw(&mut self) -> Result<(), Box<dyn error::Error>> {
-        self.terminal.draw(|f| {
-            let list_item_list: Vec<_> = self.messages.iter()
-                .map(|msg| {
-                    let sender_name_color = if msg.deleted {
-                        Color::Reset
-                    } else {
-                        msg.sender_color.as_ref()
-                            .map(|c| Color::Rgb(c.r, c.g, c.b))
-                            .unwrap_or(Color::Reset)
-                    };
-                    let header = Spans::from(vec![
-                        Span::styled(msg.server_timestamp.format("%H:%M:%S").to_string(), Style::default().fg(Color::Blue)),
-                        Span::raw(" "),
-                        Span::styled(
-                            msg.sender_name.to_owned(),
-                            Style::default().fg(sender_name_color).add_modifier(Modifier::ITALIC).add_modifier(Modifier::BOLD),
-                        ),
-                    ]);
-                    let width = f.size().width as usize - 2;
-                    let options = Options::new(width).break_words(false);
-                    let message_lines: Vec<_> = textwrap::wrap(&msg.message_text, options).iter()
-                        .map(|line| match line {
-                            Cow::Borrowed(txt) => *txt,
-                            Cow::Owned(txt) => txt,
-                        })
-                        .map(|line| {
-                            Spans::from(vec![Span::raw(line.to_owned())])
-                        })
-                        .collect();
-                    let mut spans = vec![Spans::from("-".repeat(width)), header];
-                    spans.extend(message_lines);
-                    let block_color = if msg.deleted { Color::LightRed } else { Color::Reset };
-                    ListItem::new(spans).style(Style::default().bg(block_color))
-                })
-                .collect();
-
-            let msg_list = List::new(list_item_list)
-                .block(Block::default().borders(Borders::ALL).title("Chat"))
-                .start_corner(Corner::TopLeft);
-            f.render_widget(msg_list, f.size());
-        })?;
-
-        Ok(())
-    }
-}
-
-impl Drop for App {
-    fn drop(&mut self) {
-        disable_raw_mode().unwrap();
-        execute!(self.terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture).unwrap();
-        self.terminal.show_cursor().unwrap();
-    }
-}
-
-struct Message {
-    message_id: String,
-    sender_name: String,
-    sender_id: String,
-    message_text: String,
-    server_timestamp: DateTime<Utc>,
-    sender_color: Option<RGBColor>,
-    deleted: bool,
 }

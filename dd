@@ -1,0 +1,7 @@
+#!/usr/bin/env sh
+
+compose="$(dirname $(realpath $0))/docker-compose.yml"
+
+docker-compose -f $compose down --remove-orphans
+
+docker-compose -f $compose up -d
