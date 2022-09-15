@@ -486,6 +486,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "include-postgres-sql"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e35019dbdefd378efeaa11079db4b79ece6303d5f914f152e2afa0ae4619ae41"
+dependencies = [
+ "futures",
+ "include-sql",
+]
+
+[[package]]
+name = "include-sql"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "55c40d2f4d8b523887495d9065eac17844975884101da29fb0091cd320758486"
+dependencies = [
+ "once_cell",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "syn",
+]
+
+[[package]]
 name = "indexmap"
 version = "1.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1300,6 +1323,8 @@ dependencies = [
  "chrono",
  "clap",
  "duration-string",
+ "include-postgres-sql",
+ "include-sql",
  "log",
  "num_cpus",
  "pretty_env_logger",

@@ -16,15 +16,18 @@ use tokio::sync::watch::{self, Receiver};
 use chrono::{DateTime, Utc};
 
 use clap::Parser;
+use include_postgres_sql::*;
 use serde::Deserialize;
 use tokio::time::{self, Duration, Instant};
 use tokio::{select, signal};
 use tokio_postgres::types::Type;
-use tokio_postgres::{GenericClient, NoTls};
+use tokio_postgres::{Config, GenericClient, NoTls};
 use twitch_irc::login::StaticLoginCredentials;
 use twitch_irc::message::{ClearChatAction, RGBColor, ServerMessage};
 use twitch_irc::{ClientConfig, SecureWSTransport, TwitchIRCClient};
 use uuid::Uuid;
+
+include_sql!("src/scripts/library.sql");
 
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
@@ -46,11 +49,14 @@ async fn watch_task(
 ) -> Result<(), Box<dyn error::Error>> {
     let task_number = TASK_COUNTER.fetch_add(1, Ordering::SeqCst);
     info!("Initializing the task {}", task_number);
-    let (db_client, connection) = tokio_postgres::connect(
-        "host=localhost port=5432 user=twirc password=twirc dbname=twirc",
-        NoTls,
-    )
-    .await?;
+    let (db_client, connection) = Config::new()
+        .host("localhost")
+        .port(5432)
+        .user("twirc")
+        .password("twirc")
+        .dbname("twirc")
+        .connect(NoTls)
+        .await?;
     tokio::spawn(async move {
         if let Err(e) = connection.await {
             error!("connection error: {}", e);
@@ -65,33 +71,6 @@ async fn watch_task(
         twitch_client.join(streamer).unwrap();
     }
 
-    let insert_stmt = db_client
-        .prepare_typed(
-            include_str!("scripts/add_message.sql"),
-            &[
-                Type::INT4,
-                Type::VARCHAR,
-                Type::INT4,
-                Type::VARCHAR,
-                Type::VARCHAR,
-                Type::UUID,
-                Type::VARCHAR,
-                Type::TIMESTAMPTZ,
-            ],
-        )
-        .await?;
-
-    let delete_stmt = db_client
-        .prepare_typed(include_str!("scripts/delete_message.sql"), &[Type::UUID])
-        .await?;
-
-    let ban_stmt = db_client
-        .prepare_typed(
-            include_str!("scripts/ban_user.sql"),
-            &[Type::INT4, Type::INT4],
-        )
-        .await?;
-
     loop {
         select! {
             _ = rx.changed() => {
@@ -105,17 +84,13 @@ async fn watch_task(
                             ClearChatAction::UserBanned{user_login, user_id} => {
                                 let channel_id: i32 = msg.channel_id.parse()?;
                                 let sender_id: i32 = user_id.parse()?;
-                                db_client.execute(&ban_stmt,
-                                    &[&sender_id, &channel_id]
-                                ).await?;
+                                db_client.ban_user(sender_id, channel_id).await?;
                                 warn!("{} banned in channel({})", user_login, msg.channel_login);
                             }
                             ClearChatAction::UserTimedOut {user_id, user_login, timeout_length } => {
                                 let channel_id: i32 = msg.channel_id.parse()?;
                                 let sender_id: i32 = user_id.parse()?;
-                                db_client.execute(&ban_stmt,
-                                    &[&sender_id, &channel_id]
-                                ).await?;
+                                db_client.ban_user(sender_id, channel_id).await?;
                                 let duration = DurationString::from(timeout_length);
                                 warn!("{} timeouted in channel({}) for {}", user_login, msg.channel_login, duration);
                             }
@@ -124,9 +99,7 @@ async fn watch_task(
                     }
                     ServerMessage::ClearMsg(msg) => {
                         let msg_id = Uuid::parse_str(&msg.message_id)?;
-                        db_client.execute(&delete_stmt,
-                            &[&msg_id]
-                        ).await?;
+                        db_client.delete_message(&msg_id).await?;
                         warn!("User's({}) message ({}) deleted in channel({})", msg.sender_login, msg.message_text, msg.channel_login);
                     }
                     ServerMessage::Privmsg(msg) => {
@@ -134,9 +107,7 @@ async fn watch_task(
                         let channel_id: i32 = msg.channel_id.parse()?;
                         let sender_id: i32 = sender.id.parse()?;
                         let msg_id = Uuid::parse_str(&msg.message_id)?;
-                        db_client.execute(&insert_stmt,
-                            &[&channel_id, &msg.channel_login, &sender_id, &sender.login, &sender.name, &msg_id, &msg.message_text, &msg.server_timestamp]
-                        ).await?;
+                        db_client.add_message(channel_id, &msg.channel_login, sender_id, &sender.login, &sender.name, &msg_id, &msg.message_text, &msg.server_timestamp).await?;
                         info!("({}): {}: '{}'", msg.channel_login, sender.name, msg.message_text);
                     }
                     _ => {}
