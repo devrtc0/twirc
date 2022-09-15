@@ -2,6 +2,7 @@
 #![allow(unused_variables)]
 #![allow(dead_code)]
 
+use deadpool_postgres::{ManagerConfig, RecyclingMethod, Manager, Pool};
 use duration_string::DurationString;
 use log::{debug, error, info, warn};
 use std::borrow::Cow;
@@ -41,27 +42,12 @@ struct AppConfig {
     streamers: Vec<String>,
 }
 
-static TASK_COUNTER: AtomicUsize = AtomicUsize::new(0);
-
 async fn watch_task(
     streamers: Vec<String>,
     mut rx: Receiver<()>,
+    pool: Pool
 ) -> Result<(), Box<dyn error::Error>> {
-    let task_number = TASK_COUNTER.fetch_add(1, Ordering::SeqCst);
-    info!("Initializing the task {}", task_number);
-    let (db_client, connection) = Config::new()
-        .host("localhost")
-        .port(5432)
-        .user("twirc")
-        .password("twirc")
-        .dbname("twirc")
-        .connect(NoTls)
-        .await?;
-    tokio::spawn(async move {
-        if let Err(e) = connection.await {
-            error!("connection error: {}", e);
-        }
-    });
+    info!("Initializing the task for {:?}", streamers);
 
     let config = ClientConfig::default();
     let (mut incoming_messages, twitch_client) =
@@ -74,7 +60,7 @@ async fn watch_task(
     loop {
         select! {
             _ = rx.changed() => {
-                info!("Got an interrupt message in task {}", task_number);
+                info!("Got an interrupt message");
                 return Ok(());
             },
             Some(message) = incoming_messages.recv() => {
@@ -84,13 +70,19 @@ async fn watch_task(
                             ClearChatAction::UserBanned{user_login, user_id} => {
                                 let channel_id: i32 = msg.channel_id.parse()?;
                                 let sender_id: i32 = user_id.parse()?;
+
+                                let db_client = pool.get().await?;
                                 db_client.ban_user(sender_id, channel_id).await?;
+
                                 warn!("{} banned in channel({})", user_login, msg.channel_login);
                             }
                             ClearChatAction::UserTimedOut {user_id, user_login, timeout_length } => {
                                 let channel_id: i32 = msg.channel_id.parse()?;
                                 let sender_id: i32 = user_id.parse()?;
+
+                                let db_client = pool.get().await?;
                                 db_client.ban_user(sender_id, channel_id).await?;
+
                                 let duration = DurationString::from(timeout_length);
                                 warn!("{} timeouted in channel({}) for {}", user_login, msg.channel_login, duration);
                             }
@@ -99,7 +91,10 @@ async fn watch_task(
                     }
                     ServerMessage::ClearMsg(msg) => {
                         let msg_id = Uuid::parse_str(&msg.message_id)?;
+
+                        let db_client = pool.get().await?;
                         db_client.delete_message(&msg_id).await?;
+
                         warn!("User's({}) message ({}) deleted in channel({})", msg.sender_login, msg.message_text, msg.channel_login);
                     }
                     ServerMessage::Privmsg(msg) => {
@@ -107,7 +102,10 @@ async fn watch_task(
                         let channel_id: i32 = msg.channel_id.parse()?;
                         let sender_id: i32 = sender.id.parse()?;
                         let msg_id = Uuid::parse_str(&msg.message_id)?;
+
+                        let db_client = pool.get().await?;
                         db_client.add_message(channel_id, &msg.channel_login, sender_id, &sender.login, &sender.name, &msg_id, &msg.message_text, &msg.server_timestamp).await?;
+
                         info!("({}): {}: '{}'", msg.channel_login, sender.name, msg.message_text);
                     }
                     _ => {}
@@ -131,16 +129,30 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
         serde_yaml::from_reader(f)?
     };
 
+    let pg_config = Config::new()
+        .host("localhost")
+        .port(5432)
+        .user("twirc")
+        .password("twirc")
+        .dbname("twirc")
+        .to_owned();
+    let mgr_config = ManagerConfig {
+        recycling_method: RecyclingMethod::Fast,
+    };
+    let mgr = Manager::from_config(pg_config, NoTls, mgr_config);
+    let pool = Pool::builder(mgr).build()?;
+
     let cpu_nums = num_cpus::get();
     let mut handles = Vec::with_capacity(cpu_nums);
     let chunk_number = (app_config.streamers.len() + cpu_nums - 1) / cpu_nums;
     let chunks = app_config.streamers.chunks(chunk_number);
     let (tx, rx) = watch::channel(());
     for chunk in chunks {
-        let streamers = chunk.into_iter().map(|x| x.clone()).collect();
-        let _rx = rx.clone();
+        let streamers = chunk.iter().map(|x| x.clone()).collect();
+        let rx = rx.clone();
+        let pool = pool.clone();
         let handle = tokio::spawn(async move {
-            watch_task(streamers, _rx).await.unwrap();
+            watch_task(streamers, rx, pool).await.unwrap();
         });
         handles.push(handle);
     }
