@@ -69,19 +69,19 @@ async fn watch_task(
                         match msg.action {
                             ClearChatAction::UserBanned{user_login, user_id} => {
                                 let channel_id: i32 = msg.channel_id.parse()?;
-                                let sender_id: i32 = user_id.parse()?;
+                                let user_id: i32 = user_id.parse()?;
 
                                 let db_client = pool.get().await?;
-                                db_client.ban_user(sender_id, channel_id).await?;
+                                db_client.ban_user(channel_id, user_id, &msg.server_timestamp, &msg.channel_login, &user_login).await?;
 
                                 warn!("{} banned in channel({})", user_login, msg.channel_login);
                             }
                             ClearChatAction::UserTimedOut {user_id, user_login, timeout_length } => {
                                 let channel_id: i32 = msg.channel_id.parse()?;
-                                let sender_id: i32 = user_id.parse()?;
+                                let user_id: i32 = user_id.parse()?;
 
                                 let db_client = pool.get().await?;
-                                db_client.ban_user(sender_id, channel_id).await?;
+                                db_client.timeout_user(channel_id, user_id, &msg.server_timestamp, &msg.channel_login, &user_login, timeout_length.as_secs() as i64).await?;
 
                                 let duration = DurationString::from(timeout_length);
                                 warn!("{} timeouted in channel({}) for {}", user_login, msg.channel_login, duration);

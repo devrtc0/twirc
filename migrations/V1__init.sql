@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS twirc (
+CREATE TABLE IF NOT EXISTS message_history (
     message_id UUID NOT NULL,
     channel_id INT NOT NULL,
     sender_id INT NOT NULL,
@@ -11,4 +11,4 @@ CREATE TABLE IF NOT EXISTS twirc (
     PRIMARY KEY (message_id)
 );
 
-CREATE INDEX IF NOT EXISTS twirc_channel_sender_idx ON twirc (channel_id, sender_id);
+CREATE INDEX IF NOT EXISTS message_history_channel_sender_idx ON message_history (channel_id, sender_id);
