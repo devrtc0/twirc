@@ -1367,7 +1367,6 @@ dependencies = [
  "include-postgres-sql",
  "include-sql",
  "log",
- "num_cpus",
  "pretty_env_logger",
  "serde",
  "serde_yaml",

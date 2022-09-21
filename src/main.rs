@@ -43,19 +43,17 @@ struct AppConfig {
 }
 
 async fn watch_task(
-    streamers: Vec<String>,
+    streamer: String,
     mut rx: Receiver<()>,
     pool: Pool,
 ) -> Result<(), Box<dyn error::Error>> {
-    info!("Initializing the task for {:?}", streamers);
+    info!("Initializing the task for {:?}", streamer);
 
     let config = ClientConfig::default();
     let (mut incoming_messages, twitch_client) =
         TwitchIRCClient::<SecureWSTransport, StaticLoginCredentials>::new(config);
 
-    for streamer in streamers {
-        twitch_client.join(streamer)?;
-    }
+    twitch_client.join(streamer)?;
 
     loop {
         select! {
@@ -142,17 +140,13 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
     let mgr = Manager::from_config(pg_config, NoTls, mgr_config);
     let pool = Pool::builder(mgr).build()?;
 
-    let cpu_nums = num_cpus::get();
-    let mut handles = Vec::with_capacity(cpu_nums);
-    let chunk_number = (app_config.streamers.len() + cpu_nums - 1) / cpu_nums;
-    let chunks = app_config.streamers.chunks(chunk_number);
+    let mut handles = Vec::with_capacity(app_config.streamers.len());
     let (tx, rx) = watch::channel(());
-    for chunk in chunks {
-        let streamers = chunk.iter().map(|x| x.clone()).collect();
+    for streamer in app_config.streamers {
         let rx = rx.clone();
         let pool = pool.clone();
         let handle = tokio::spawn(async move {
-            watch_task(streamers, rx, pool).await.unwrap();
+            watch_task(streamer, rx, pool).await.unwrap();
         });
         handles.push(handle);
     }
