@@ -5,6 +5,7 @@
 use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod};
 use duration_string::DurationString;
 use log::{debug, error, info, warn};
+use core::panic;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::File;
@@ -18,7 +19,6 @@ use chrono::{DateTime, Utc};
 
 use clap::Parser;
 use include_postgres_sql::*;
-use serde::Deserialize;
 use tokio::time::{self, Duration, Instant};
 use tokio::{select, signal};
 use tokio_postgres::types::Type;
@@ -33,12 +33,7 @@ include_sql!("src/scripts/library.sql");
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
 struct Cli {
-    #[clap(short, long, value_parser, value_name = "FILE")]
-    config: PathBuf,
-}
-
-#[derive(Debug, PartialEq, Deserialize)]
-struct AppConfig {
+    #[arg(short, long)]
     streamers: Vec<String>,
 }
 
@@ -117,15 +112,11 @@ async fn watch_task(
 async fn main() -> Result<(), Box<dyn error::Error>> {
     pretty_env_logger::init();
 
-    let app_config: AppConfig = {
-        let cli = Cli::parse();
-        let config_path = cli.config;
-        if !config_path.exists() {
-            panic!("file not exists");
-        }
-        let f = File::open(config_path)?;
-        serde_yaml::from_reader(f)?
-    };
+    let cli = Cli::parse();
+    if cli.streamers.is_empty() {
+        panic!("No streamers set");
+    }
+    info!("streamers: {:?}", cli.streamers);
 
     let pg_config = Config::new()
         .host("localhost")
@@ -140,9 +131,9 @@ async fn main() -> Result<(), Box<dyn error::Error>> {
     let mgr = Manager::from_config(pg_config, NoTls, mgr_config);
     let pool = Pool::builder(mgr).build()?;
 
-    let mut handles = Vec::with_capacity(app_config.streamers.len());
+    let mut handles = Vec::with_capacity(cli.streamers.len());
     let (tx, rx) = watch::channel(());
-    for streamer in app_config.streamers {
+    for streamer in cli.streamers {
         let rx = rx.clone();
         let pool = pool.clone();
         let handle = tokio::spawn(async move {
