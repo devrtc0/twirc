@@ -42,7 +42,7 @@ async fn watch_task(
     mut rx: Receiver<()>,
     pool: Pool,
 ) -> Result<(), Box<dyn error::Error>> {
-    info!("Initializing the task for {:?}", streamer);
+    info!("Initializing the task for {streamer}");
 
     let config = ClientConfig::default();
     let (mut incoming_messages, twitch_client) =
@@ -67,7 +67,7 @@ async fn watch_task(
                                 let db_client = pool.get().await?;
                                 db_client.ban_user(channel_id, user_id, &msg.server_timestamp, &msg.channel_login, &user_login).await?;
 
-                                warn!("{} banned in channel({})", user_login, msg.channel_login);
+                                warn!("{user_login} banned in channel({})", msg.channel_login);
                             }
                             ClearChatAction::UserTimedOut {user_id, user_login, timeout_length } => {
                                 let channel_id: i32 = msg.channel_id.parse()?;
@@ -77,7 +77,7 @@ async fn watch_task(
                                 db_client.timeout_user(channel_id, user_id, &msg.server_timestamp, &msg.channel_login, &user_login, timeout_length.as_secs() as i64).await?;
 
                                 let duration = DurationString::from(timeout_length);
-                                warn!("{} timeouted in channel({}) for {}", user_login, msg.channel_login, duration);
+                                warn!("{user_login} timeouted in channel({}) for {duration}", msg.channel_login);
                             }
                             _ => {}
                         }

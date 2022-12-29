@@ -1,2 +1,2 @@
-from postgres:14
+from postgres:latest
 COPY migrations/init.sql docker-entrypoint-initdb.d/
