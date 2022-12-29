@@ -1,0 +1,7 @@
+#!/usr/bin/env sh
+
+! type refinery >/dev/null 2>&1 && echo "Install refinery using 'cargo install refinery_cli'" && exit
+
+refinery_config="$(dirname $(realpath $0))/refinery.toml"
+
+refinery migrate -c "$refinery_config"
