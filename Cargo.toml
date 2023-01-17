@@ -22,7 +22,7 @@ tokio-postgres = { version = "0.7", default-features = false, features = [
 clap = { version = "4", default-features = false, features = ["std", "derive"] }
 log = { version = "0.4", default-features = false }
 pretty_env_logger = { version = "0.4", default-features = false }
-duration-string = { version = "0.1", default-features = false }
+duration-string = { version = "0.2", default-features = false }
 include-postgres-sql = { version = "0.1", default-features = false, features = [
     "tokio",
 ] }
@@ -30,3 +30,6 @@ include-sql = { version = "0.2", default-features = false }
 deadpool-postgres = { version = "*", default-features = false, features = [
     "rt_tokio_1",
 ] }
+
+[features]
+default = []
