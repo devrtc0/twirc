@@ -4,7 +4,7 @@
 -- param: sender_id: i32
 -- param: sender_login: &str
 -- param: sender_name: &str
--- param: message_id: &Uuid
+-- param: message_id: &str
 -- param: message_text: &str
 -- param: server_timestamp: &DateTime<Utc>
 INSERT INTO message_history (channel_id, channel_login, sender_id, sender_login, sender_name, message_id, message_text, server_timestamp)
@@ -30,7 +30,7 @@ INSERT INTO user_history (channel_id, user_id, server_timestamp, channel_name, u
 VALUES (:channel_id, :user_id, :server_timestamp, :channel_name, :user_login, :timeout_duration);
 
 -- name: delete_message!
--- param: message_id: &Uuid - Message ID
+-- param: message_id: &str - Message ID
 UPDATE message_history
 SET deleted = true
 WHERE message_id = :message_id;

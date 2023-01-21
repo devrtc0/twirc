@@ -10,26 +10,32 @@ twitch-irc = { version = "5", default-features = false, features = [
 tokio = { version = "1", default-features = false, features = [
     "rt-multi-thread",
     "time",
+    "sync",
     "signal",
 ] }
 chrono = { version = "0.4", default-features = false }
-uuid = { version = "1", default-features = false }
-tokio-postgres = { version = "0.7", default-features = false, features = [
-    "runtime",
-    "with-chrono-0_4",
-    "with-uuid-1",
-] }
 clap = { version = "4", default-features = false, features = ["std", "derive"] }
 log = { version = "0.4", default-features = false }
 pretty_env_logger = { version = "0.4", default-features = false }
 duration-string = { version = "0.2", default-features = false }
+async-trait = { version = "0.1", default-features = false }
+
+tokio-postgres = { version = "0.7", default-features = false, features = [
+    "runtime",
+    "with-chrono-0_4",
+    "with-uuid-1",
+], optional = true }
 include-postgres-sql = { version = "0.1", default-features = false, features = [
     "tokio",
-] }
-include-sql = { version = "0.2", default-features = false }
+], optional = true }
+include-sql = { version = "0.2", default-features = false, optional = true }
 deadpool-postgres = { version = "0.10", default-features = false, features = [
     "rt_tokio_1",
-] }
+], optional = true }
+
+libmdbx = { version = "0.2", default-features = false, optional = true }
 
 [features]
-default = []
+default = [  ]
+mdbx = [ "dep:libmdbx" ]
+pg = [ "dep:tokio-postgres", "dep:include-postgres-sql", "dep:include-sql", "dep:deadpool-postgres" ]
