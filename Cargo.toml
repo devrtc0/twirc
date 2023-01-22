@@ -34,8 +34,17 @@ deadpool-postgres = { version = "0.10", default-features = false, features = [
 ], optional = true }
 
 libmdbx = { version = "0.2", default-features = false, optional = true }
+serde = { version = "1", default-features = false, features = [
+    "derive",
+], optional = true }
+serde_json = { version = "1", optional = true }
 
 [features]
-default = [  ]
-mdbx = [ "dep:libmdbx" ]
-pg = [ "dep:tokio-postgres", "dep:include-postgres-sql", "dep:include-sql", "dep:deadpool-postgres" ]
+default = []
+mdbx = ["dep:libmdbx", "dep:serde", "dep:serde_json", "chrono/serde"]
+pg = [
+    "dep:tokio-postgres",
+    "dep:include-postgres-sql",
+    "dep:include-sql",
+    "dep:deadpool-postgres",
+]
