@@ -2,23 +2,22 @@
 #![allow(unused_variables)]
 #![allow(dead_code)]
 
-use async_trait::async_trait;
-#[cfg(feature = "mdbx")]
-use serde::{Serialize, Deserialize};
 use core::panic;
-use std::ops::Add;
 #[cfg(feature = "pg")]
 use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod};
 use duration_string::DurationString;
 use log::{debug, error, info, warn};
+#[cfg(feature = "mdbx")]
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::env::temp_dir;
 use std::fs::File;
 use std::io::{Stdout, StdoutLock};
+use std::ops::Add;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{error, fs, io};
-use std::env::temp_dir;
 use tokio::sync::watch::{self, Receiver};
 
 use chrono::{DateTime, Utc};
@@ -222,7 +221,7 @@ fn new_store(mut rx: mpsc::Receiver<StoreMessage>) -> JoinHandle<()> {
 
 #[cfg(feature = "mdbx")]
 fn new_store(mut rx: mpsc::Receiver<StoreMessage>) -> JoinHandle<()> {
-    use libmdbx::{WriteFlags, TableFlags};
+    use libmdbx::{TableFlags, WriteFlags};
 
     let dir = temp_dir().join("twirc");
     if !dir.exists() {
@@ -231,8 +230,12 @@ fn new_store(mut rx: mpsc::Receiver<StoreMessage>) -> JoinHandle<()> {
     let db = Database::new().set_max_tables(10).open(&dir).unwrap();
     {
         let txn = db.begin_rw_txn().unwrap();
-        let table = txn.create_table(Some("messages"), TableFlags::empty()).unwrap();
-        let table = txn.create_table(Some("history"), TableFlags::empty()).unwrap();
+        let table = txn
+            .create_table(Some("messages"), TableFlags::empty())
+            .unwrap();
+        let table = txn
+            .create_table(Some("history"), TableFlags::empty())
+            .unwrap();
         txn.commit().unwrap();
     }
 
@@ -248,7 +251,8 @@ fn new_store(mut rx: mpsc::Receiver<StoreMessage>) -> JoinHandle<()> {
                 let message_id = msg.message_id.clone();
                 let record: ChatMessage = msg.into();
                 let json = serde_json::to_vec(&record).unwrap();
-                tx.put(&table, message_id, json, WriteFlags::empty()).unwrap();
+                tx.put(&table, message_id, json, WriteFlags::empty())
+                    .unwrap();
                 tx.commit().unwrap();
             }
             Some(StoreMessage::Delete(msg)) => {
@@ -259,7 +263,8 @@ fn new_store(mut rx: mpsc::Receiver<StoreMessage>) -> JoinHandle<()> {
                 record.deleted = true;
 
                 let json = serde_json::to_vec(&record).unwrap();
-                tx.put(&table, msg.message_id.as_bytes(), json, WriteFlags::empty()).unwrap();
+                tx.put(&table, msg.message_id.as_bytes(), json, WriteFlags::empty())
+                    .unwrap();
                 tx.commit().unwrap();
             }
             Some(StoreMessage::Ban(msg)) => {
