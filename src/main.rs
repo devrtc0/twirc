@@ -7,8 +7,6 @@ use core::panic;
 use deadpool_postgres::{Manager, ManagerConfig, Pool, RecyclingMethod};
 use duration_string::DurationString;
 use log::{debug, error, info, warn};
-#[cfg(feature = "mdbx")]
-use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::env::temp_dir;
@@ -39,9 +37,6 @@ use twitch_irc::{ClientConfig, SecureWSTransport, TwitchIRCClient};
 
 #[cfg(feature = "pg")]
 include_sql!("db/scripts/library.sql");
-
-#[cfg(feature = "mdbx")]
-type Database = libmdbx::Database<libmdbx::NoWriteMap>;
 
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
@@ -204,7 +199,7 @@ fn new_store_sender() -> StoreMsgSender {
     StoreMsgSender::new(db_tx)
 }
 
-#[cfg(not(any(feature = "mdbx", feature = "pg")))]
+#[cfg(not(any(feature = "pg")))]
 fn new_store(mut rx: mpsc::Receiver<StoreMessage>) -> JoinHandle<()> {
     task::spawn(async move {
         loop {
@@ -215,77 +210,6 @@ fn new_store(mut rx: mpsc::Receiver<StoreMessage>) -> JoinHandle<()> {
                 }
                 _ => {}
             }
-        }
-    })
-}
-
-#[cfg(feature = "mdbx")]
-fn new_store(mut rx: mpsc::Receiver<StoreMessage>) -> JoinHandle<()> {
-    use libmdbx::{TableFlags, WriteFlags};
-
-    let dir = temp_dir().join("twirc");
-    if !dir.exists() {
-        fs::create_dir(&dir).unwrap();
-    }
-    let db = Database::new().set_max_tables(10).open(&dir).unwrap();
-    {
-        let txn = db.begin_rw_txn().unwrap();
-        let table = txn
-            .create_table(Some("messages"), TableFlags::empty())
-            .unwrap();
-        let table = txn
-            .create_table(Some("history"), TableFlags::empty())
-            .unwrap();
-        txn.commit().unwrap();
-    }
-
-    task::spawn_blocking(move || loop {
-        match rx.blocking_recv() {
-            Some(StoreMessage::Break) => {
-                info!("DB loop break");
-                break;
-            }
-            Some(StoreMessage::Add(msg)) => {
-                let tx = db.begin_rw_txn().unwrap();
-                let table = tx.open_table(Some("messages")).unwrap();
-                let message_id = msg.message_id.clone();
-                let record: ChatMessage = msg.into();
-                let json = serde_json::to_vec(&record).unwrap();
-                tx.put(&table, message_id, json, WriteFlags::empty())
-                    .unwrap();
-                tx.commit().unwrap();
-            }
-            Some(StoreMessage::Delete(msg)) => {
-                let tx = db.begin_rw_txn().unwrap();
-                let table = tx.open_table(Some("messages")).unwrap();
-                let raw: Vec<u8> = tx.get(&table, msg.message_id.as_bytes()).unwrap().unwrap();
-                let mut record: ChatMessage = serde_json::from_slice(&raw).unwrap();
-                record.deleted = true;
-
-                let json = serde_json::to_vec(&record).unwrap();
-                tx.put(&table, msg.message_id.as_bytes(), json, WriteFlags::empty())
-                    .unwrap();
-                tx.commit().unwrap();
-            }
-            Some(StoreMessage::Ban(msg)) => {
-                let tx = db.begin_rw_txn().unwrap();
-                let table = tx.open_table(Some("history")).unwrap();
-                let key = msg.server_timestamp.timestamp_nanos().to_ne_bytes();
-                let record: ChatHistory = msg.into();
-                let json = serde_json::to_string(&record).unwrap();
-                tx.put(&table, key, json, WriteFlags::empty()).unwrap();
-                tx.commit().unwrap();
-            }
-            Some(StoreMessage::Suspend(msg)) => {
-                let tx = db.begin_rw_txn().unwrap();
-                let table = tx.open_table(Some("history")).unwrap();
-                let key = msg.server_timestamp.timestamp_nanos().to_ne_bytes();
-                let record: ChatHistory = msg.into();
-                let json = serde_json::to_string(&record).unwrap();
-                tx.put(&table, key, json, WriteFlags::empty()).unwrap();
-                tx.commit().unwrap();
-            }
-            _ => {}
         }
     })
 }
@@ -363,70 +287,6 @@ fn new_store(mut rx: mpsc::Receiver<StoreMessage>) -> JoinHandle<()> {
             }
         }
     })
-}
-
-#[cfg(feature = "mdbx")]
-#[derive(Serialize, Deserialize)]
-struct ChatMessage {
-    channel_id: i32,
-    sender_id: i32,
-    channel_login: String,
-    sender_login: String,
-    sender_name: String,
-    message_text: String,
-    server_timestamp: DateTime<Utc>,
-    deleted: bool,
-}
-#[cfg(feature = "mdbx")]
-impl From<AddMessage> for ChatMessage {
-    fn from(value: AddMessage) -> Self {
-        Self {
-            channel_id: value.channel_id,
-            sender_id: value.sender_id,
-            channel_login: value.channel_login,
-            sender_login: value.sender_login,
-            sender_name: value.sender_name,
-            message_text: value.message_text,
-            server_timestamp: value.server_timestamp,
-            deleted: false,
-        }
-    }
-}
-#[cfg(feature = "mdbx")]
-#[derive(Serialize, Deserialize)]
-struct ChatHistory {
-    channel_id: i32,
-    channel_login: String,
-    user_id: i32,
-    user_login: String,
-    server_timestamp: DateTime<Utc>,
-    timeout_duration: Duration,
-}
-#[cfg(feature = "mdbx")]
-impl From<BanMessage> for ChatHistory {
-    fn from(value: BanMessage) -> Self {
-        Self {
-            channel_id: value.channel_id,
-            channel_login: value.channel_login,
-            user_id: value.user_id,
-            user_login: value.user_login,
-            server_timestamp: value.server_timestamp,
-            timeout_duration: Duration::MAX,
-        }
-    }
-}
-#[cfg(feature = "mdbx")]
-impl From<SuspendMessage> for ChatHistory {
-    fn from(value: SuspendMessage) -> Self {
-        Self {
-            channel_id: value.channel_id,
-            channel_login: value.channel_login,
-            user_id: value.user_id,
-            user_login: value.user_login,
-            server_timestamp: value.server_timestamp,
-            timeout_duration: value.timeout_duration,
-        }
-    }
 }
 
 #[derive(Debug)]
