@@ -3,6 +3,7 @@ version: "3.9"
 services:
   db:
     build: .
+    container_name: twirc_db
     ports:
       - "5432:5432"
     environment:

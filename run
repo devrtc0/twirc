@@ -1,7 +1,0 @@
-#!/usr/bin/env sh
-
-DIR_PATH="$(dirname "$(realpath "$0")")"
-
-cd "$DIR_PATH" || exit
-
-RUST_LOG=info cargo r --release -- -s farbenfuchs
