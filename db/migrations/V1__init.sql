@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS message_history (
     sender_name VARCHAR(64) NOT NULL,
     message_text VARCHAR(512) NOT NULL,
     deleted BOOLEAN NOT NULL DEFAULT false,
-    PRIMARY KEY (message_id)
+    CONSTRAINT pk_message_history_message_id PRIMARY KEY (message_id)
 );
 
-CREATE INDEX IF NOT EXISTS message_history_channel_sender_idx ON message_history (channel_id, sender_id);
+CREATE INDEX IF NOT EXISTS idx_message_history_channel_sender ON message_history (channel_id, sender_id);
