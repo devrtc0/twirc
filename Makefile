@@ -7,7 +7,7 @@ db-clean:
 	docker-compose -f ./db/docker-compose.yml down --remove-orphans
 
 db-stop:
-	docker stop twirc_db
+	docker stop twirc_db twirc_scylla_db
 
 db-migrate:
 	refinery migrate -c ./db/refinery.toml -p ./db/migrations

@@ -8,3 +8,9 @@ services:
       - "5432:5432"
     environment:
       POSTGRES_PASSWORD: postgres
+  scylla:
+    image: scylladb/scylla
+    command: --smp 2
+    container_name: twirc_scylla_db
+    ports:
+      - "9042:9042"
