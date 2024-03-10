@@ -13,7 +13,7 @@ db-migrate:
 	refinery migrate -c ./db/refinery.toml -p ./db/migrations
 
 app-run:
-	RUST_LOG=info cargo run -- -s reihatori
+	RUST_LOG=info cargo run -- -s mudriy_ork
 
 vendor:
 	@if [ ! -f vendor/bin/refinery ]; then \
